@@ -14,10 +14,14 @@ cmake_install.cmake
 Makefile
 *.pro.user
 
-# Python / tooling caches
+# Local environment / tooling caches
+.venv/
 __pycache__/
 .pytest_cache/
 .mypy_cache/
+
+# Runtime outputs
+screenshots/
 
 # Logs and temporary files
 *.log

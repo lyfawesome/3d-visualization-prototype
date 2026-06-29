@@ -1,0 +1,24 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-msys2-ucrt64",
+      "displayName": "Windows MSYS2 UCRT64",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-msys2-ucrt64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "C:/msys64/ucrt64",
+        "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/msys64/ucrt64/bin/ninja.exe"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msys2-ucrt64-release",
+      "configurePreset": "windows-msys2-ucrt64"
+    }
+  ]
+}

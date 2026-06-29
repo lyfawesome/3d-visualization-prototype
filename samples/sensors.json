@@ -1,0 +1,30 @@
+[
+  {
+    "id": "S01",
+    "name": "Load Sensor 01",
+    "position": [-1.8, -0.8, 0.45],
+    "type": "load",
+    "unit": "kN"
+  },
+  {
+    "id": "S02",
+    "name": "Load Sensor 02",
+    "position": [1.8, -0.8, 0.45],
+    "type": "load",
+    "unit": "kN"
+  },
+  {
+    "id": "S03",
+    "name": "Load Sensor 03",
+    "position": [1.8, 0.8, 0.45],
+    "type": "load",
+    "unit": "kN"
+  },
+  {
+    "id": "S04",
+    "name": "Load Sensor 04",
+    "position": [-1.8, 0.8, 0.45],
+    "type": "load",
+    "unit": "kN"
+  }
+]

@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Build outputs
+build/
+dist/
+out/
+cmake-build-*/
+
+# Qt / CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.pro.user
+
+# Python / tooling caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+~$*
+
+# IDE
+.idea/
+.vscode/

@@ -62,15 +62,29 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 The script installs the required MSYS2 UCRT64 binary packages if they are missing, then configures CMake and builds the Release executable with Ninja.
 
-Core MSYS2 packages:
+Core MSYS2 build packages:
 
+- `mingw-w64-ucrt-x86_64-toolchain`
+- `mingw-w64-ucrt-x86_64-cmake`
+- `mingw-w64-ucrt-x86_64-ninja`
+- `mingw-w64-ucrt-x86_64-eigen3`
+- `mingw-w64-ucrt-x86_64-exprtk`
+- `mingw-w64-ucrt-x86_64-nlohmann-json`
 - `mingw-w64-ucrt-x86_64-qt6-base`
 - `mingw-w64-ucrt-x86_64-vtk`
 - `mingw-w64-ucrt-x86_64-opencascade`
+
+CalculiX is required for solving, not for compiling the C++ targets:
+
 - `mingw-w64-ucrt-x86_64-calculix-ccx`
-- `mingw-w64-ucrt-x86_64-cmake`
-- `mingw-w64-ucrt-x86_64-ninja`
-- `mingw-w64-ucrt-x86_64-gcc`
+
+If a restricted environment prevents GCC from writing temporary files under `C:\msys64\tmp`, use a writable workspace temp directory before invoking CMake:
+
+```powershell
+New-Item -ItemType Directory -Force .tmp\msys2 | Out-Null
+$env:TMP = "$PWD\.tmp\msys2"
+$env:TEMP = "$PWD\.tmp\msys2"
+```
 
 Netgen is discovered in this order:
 
@@ -155,11 +169,21 @@ Dependency policy:
 - CalculiX is expected from MSYS2 at `C:\msys64\ucrt64\bin\ccx.exe` or from `PATH`; do not commit `ccx.exe`.
 - vcpkg source trees and installed packages are not committed. Keep `vcpkg.json`, `vcpkg-overlays/`, and scripts in Git; recreate dependencies locally.
 
-If local dependency folders must be moved manually between machines, copy them outside Git tracking into the expected ignored locations, for example:
+For the verified `windows-msys2-ucrt64` build route, the only local dependency folder that normally needs to be copied between machines is:
 
 ```text
 extern/netgen/
+```
+
+Do not copy these folders for the MSYS2 build route:
+
+```text
+build/
+vcpkg_installed/
 extern/vcpkg/
+extern/prebuilt/
+p/
+s/
 ```
 
 Before pushing, stage from an explicit allow-list instead of using `git add .`:

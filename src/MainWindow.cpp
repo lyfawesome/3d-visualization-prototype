@@ -1,76 +1,45 @@
 #include "MainWindow.h"
 
+#include <QAction>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFrame>
 #include <QHBoxLayout>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
-#include <QMessageBox>
 #include <QPushButton>
+#include <QProgressBar>
+#include <QProcess>
+#include <QScrollArea>
+#include <QSizePolicy>
+#include <QStringList>
 #include <QStatusBar>
-#include <QTextStream>
+#include <QStyle>
+#include <QThread>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <QVTKOpenGLNativeWidget.h>
 
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <stdexcept>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-#ifndef M_PI_2
-#define M_PI_2 1.57079632679489661923
-#endif
-
-#include <BRepMesh_IncrementalMesh.hxx>
-#include <BRep_Tool.hxx>
-#include <IFSelect_ReturnStatus.hxx>
-#include <Poly_Triangle.hxx>
-#include <Poly_Triangulation.hxx>
-#include <STEPControl_Reader.hxx>
-#include <TopAbs.hxx>
-#include <TopExp_Explorer.hxx>
-#include <TopLoc_Location.hxx>
-#include <TopoDS.hxx>
-#include <TopoDS_Face.hxx>
-#include <TopoDS_Shape.hxx>
-#include <gp_Pnt.hxx>
-#include <gp_Trsf.hxx>
-
-#include <vtkActor.h>
 #include <vtkAxesActor.h>
-#include <vtkBillboardTextActor3D.h>
-#include <vtkAlgorithm.h>
+#include <vtkCallbackCommand.h>
 #include <vtkCamera.h>
-#include <vtkCellArray.h>
-#include <vtkCleanPolyData.h>
-#include <vtkDoubleArray.h>
+#include <vtkCaptionActor2D.h>
+#include <vtkCellPicker.h>
+#include <vtkCommand.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkLookupTable.h>
-#include <vtkOBJReader.h>
+#include <vtkOrientationMarkerWidget.h>
 #include <vtkPNGWriter.h>
-#include <vtkPointData.h>
-#include <vtkPoints.h>
-#include <vtkPolyData.h>
-#include <vtkPolyDataMapper.h>
-#include <vtkProperty.h>
 #include <vtkRenderer.h>
+#include <vtkRenderWindowInteractor.h>
 #include <vtkScalarBarActor.h>
-#include <vtkSphereSource.h>
-#include <vtkSTLReader.h>
 #include <vtkTextProperty.h>
-#include <vtkTriangleFilter.h>
 #include <vtkWindowToImageFilter.h>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -78,59 +47,204 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle("3D Specimen Visualization Prototype");
 
-    playbackTimer_.setInterval(450);
-    connect(&playbackTimer_, &QTimer::timeout, this, &MainWindow::advanceFrame);
-
     buildUi();
     buildScene();
-    loadDemoFiles();
+    statusBar()->showMessage("Ready. Open a model to begin.");
 }
-
-MainWindow::~MainWindow() = default;
-
+MainWindow::~MainWindow()
+{
+    if (solverProcess_) {
+        solverProcess_->kill();
+        solverProcess_->waitForFinished(1500);
+    }
+    if (meshWorker_) {
+        meshWorker_->wait();
+    }
+}
 void MainWindow::buildUi()
 {
     auto *toolbar = addToolBar("Main Toolbar");
     toolbar->setMovable(false);
+    toolbar->setIconSize(QSize(18, 18));
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogNewFolder), "New Project", this, &MainWindow::newProject);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_DirOpenIcon), "Open Project", this, &MainWindow::openProject);
+    toolbar->addSeparator();
+    toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), "Reset View", this, &MainWindow::resetView);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), "Screenshot", this, &MainWindow::exportPng);
 
-    toolbar->addAction("Open Model", this, &MainWindow::openModel);
-    toolbar->addAction("Load Sensors", this, &MainWindow::openSensors);
-    toolbar->addAction("Load Data", this, &MainWindow::openLoadData);
-    toolbar->addAction("Play/Pause", this, &MainWindow::togglePlayback);
-    toolbar->addAction("Reset View", this, &MainWindow::resetView);
-    toolbar->addAction("Export PNG", this, &MainWindow::exportPng);
+    pickConstraintFaceAction_ = new QAction(style()->standardIcon(QStyle::SP_DialogApplyButton), "Pick Constraint Faces", this);
+    pickConstraintFaceAction_->setCheckable(true);
+    pickConstraintFaceAction_->setToolTip("Pick STEP faces to constrain before Netgen meshing");
+    pickControlPointAction_ = new QAction(style()->standardIcon(QStyle::SP_ArrowForward), "Pick Load Points", this);
+    pickControlPointAction_->setCheckable(true);
+    pickControlPointAction_->setToolTip("Pick loading points on the generated boundary mesh");
+    connect(pickConstraintFaceAction_, &QAction::toggled, this, [this](bool checked) {
+        if (checked && pickControlPointAction_) {
+            pickControlPointAction_->setChecked(false);
+        }
+        statusBar()->showMessage(checked ? "Constraint face picking enabled." : "Constraint face picking disabled.");
+    });
+    connect(pickControlPointAction_, &QAction::toggled, this, [this](bool checked) {
+        if (checked && pickConstraintFaceAction_) {
+            pickConstraintFaceAction_->setChecked(false);
+        }
+        statusBar()->showMessage(checked ? "Load point picking enabled." : "Load point picking disabled.");
+    });
 
     auto *root = new QWidget(this);
     auto *rootLayout = new QHBoxLayout(root);
     rootLayout->setContentsMargins(0, 0, 0, 0);
 
     auto *sidePanel = new QWidget(root);
-    sidePanel->setFixedWidth(330);
-    auto *sideLayout = new QVBoxLayout(sidePanel);
-    sideLayout->setContentsMargins(14, 14, 14, 14);
+    sidePanel->setObjectName("SidePanel");
+    sidePanel->setFixedWidth(390);
+    auto *sideOuterLayout = new QVBoxLayout(sidePanel);
+    sideOuterLayout->setContentsMargins(0, 0, 0, 0);
 
+    auto *scrollArea = new QScrollArea(sidePanel);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    auto *sideContent = new QWidget(scrollArea);
+    auto *sideLayout = new QVBoxLayout(sideContent);
+    sideLayout->setContentsMargins(16, 16, 16, 18);
+    sideLayout->setSpacing(12);
+    scrollArea->setWidget(sideContent);
+    sideOuterLayout->addWidget(scrollArea);
+
+    auto *titleLabel = new QLabel("Preprocessing Workflow", sideContent);
+    titleLabel->setObjectName("PanelTitle");
+    auto *subtitleLabel = new QLabel("Follow the enabled action from top to bottom. Configuration checks update after each step.", sideContent);
+    subtitleLabel->setObjectName("PanelSubtitle");
+    subtitleLabel->setWordWrap(true);
+    sideLayout->addWidget(titleLabel);
+    sideLayout->addWidget(subtitleLabel);
+
+    projectLabel_ = new QLabel("Project: not created", sidePanel);
+    projectLabel_->setWordWrap(true);
     modelLabel_ = new QLabel("Model: not loaded", sidePanel);
     modelLabel_->setWordWrap(true);
-    timeLabel_ = new QLabel("Time: 0.00 s", sidePanel);
+    workflowLabel_ = new QLabel(sidePanel);
+    workflowLabel_->setObjectName("NextActionLabel");
+    workflowLabel_->setWordWrap(true);
+    workflowLabel_->setTextFormat(Qt::RichText);
+    configStatusLabel_ = new QLabel(sidePanel);
+    configStatusLabel_->setObjectName("ConfigStatusLabel");
+    configStatusLabel_->setWordWrap(true);
+    configStatusLabel_->setTextFormat(Qt::RichText);
     valueLabel_ = new QLabel("Load range: --", sidePanel);
-    sensorList_ = new QListWidget(sidePanel);
+    valueLabel_->setObjectName("MutedLabel");
+    loadingDeviceList_ = new QListWidget(sidePanel);
+    fixedNodeList_ = new QListWidget(sidePanel);
+    connect(loadingDeviceList_, &QListWidget::currentRowChanged, this, &MainWindow::onLoadingDeviceSelectionChanged);
 
-    auto *playButton = new QPushButton("Play / Pause", sidePanel);
-    connect(playButton, &QPushButton::clicked, this, &MainWindow::togglePlayback);
-    auto *resetButton = new QPushButton("Reset View", sidePanel);
-    connect(resetButton, &QPushButton::clicked, this, &MainWindow::resetView);
+    openModelButton_ = new QPushButton(style()->standardIcon(QStyle::SP_FileIcon), "Open Model", sideContent);
+    connect(openModelButton_, &QPushButton::clicked, this, &MainWindow::openModel);
+    generateMeshButton_ = new QPushButton(style()->standardIcon(QStyle::SP_ComputerIcon), "Generate Volume Mesh", sideContent);
+    connect(generateMeshButton_, &QPushButton::clicked, this, &MainWindow::generateVolumeMesh);
+    loadPointsButton_ = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogDetailedView), "Load Points", sideContent);
+    connect(loadPointsButton_, &QPushButton::clicked, this, &MainWindow::openLoadingDevices);
+    exportInpButton_ = new QPushButton(style()->standardIcon(QStyle::SP_DialogSaveButton), "Export INP", sideContent);
+    connect(exportInpButton_, &QPushButton::clicked, this, &MainWindow::exportCalculixInput);
+    runCalculixButton_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Run CalculiX", sideContent);
+    connect(runCalculixButton_, &QPushButton::clicked, this, &MainWindow::runCalculixSolver);
+    openResultButton_ = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogContentsView), "Open Result", sideContent);
+    connect(openResultButton_, &QPushButton::clicked, this, &MainWindow::openCalculixResult);
+    auto *clearPointsButton = new QPushButton("Clear Load Points", sideContent);
+    connect(clearPointsButton, &QPushButton::clicked, this, &MainWindow::clearControlPoints);
 
-    sideLayout->addWidget(new QLabel("Model", sidePanel));
+    auto makeModeButton = [](QAction *action, QWidget *parent) {
+        auto *button = new QToolButton(parent);
+        button->setDefaultAction(action);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        return button;
+    };
+    auto addStepCard = [&](const QString &number, const QString &title, QLabel **statusTarget, QWidget *actionWidget) {
+        auto *card = new QFrame(sideContent);
+        card->setObjectName("StepCard");
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(12, 12, 12, 12);
+        cardLayout->setSpacing(8);
+        auto *headerLayout = new QHBoxLayout();
+        auto *badge = new QLabel(number, card);
+        badge->setObjectName("StepBadge");
+        badge->setAlignment(Qt::AlignCenter);
+        badge->setFixedSize(24, 24);
+        auto *titleText = new QLabel(title, card);
+        titleText->setObjectName("StepTitle");
+        headerLayout->addWidget(badge);
+        headerLayout->addWidget(titleText, 1);
+        cardLayout->addLayout(headerLayout);
+        auto *status = new QLabel(card);
+        status->setObjectName("StepStatus");
+        status->setWordWrap(true);
+        status->setTextFormat(Qt::RichText);
+        *statusTarget = status;
+        cardLayout->addWidget(status);
+        if (actionWidget) {
+            cardLayout->addWidget(actionWidget);
+        }
+        sideLayout->addWidget(card);
+    };
+
+    sideLayout->addWidget(workflowLabel_);
+    sideLayout->addWidget(configStatusLabel_);
+    addStepCard("1", "Project", &projectStepStatusLabel_, nullptr);
+    addStepCard("2", "Import STEP Model", &modelStepStatusLabel_, openModelButton_);
+    addStepCard("3", "Constraint Faces", &constraintStepStatusLabel_, makeModeButton(pickConstraintFaceAction_, sideContent));
+    addStepCard("4", "Netgen Volume Mesh", &meshStepStatusLabel_, generateMeshButton_);
+
+    auto *loadActions = new QWidget(sideContent);
+    auto *loadActionLayout = new QHBoxLayout(loadActions);
+    loadActionLayout->setContentsMargins(0, 0, 0, 0);
+    loadActionLayout->setSpacing(8);
+    loadActionLayout->addWidget(loadPointsButton_);
+    loadActionLayout->addWidget(makeModeButton(pickControlPointAction_, sideContent));
+    addStepCard("5", "Load Points", &loadStepStatusLabel_, loadActions);
+    sideLayout->addWidget(clearPointsButton);
+
+    auto *exportActions = new QWidget(sideContent);
+    auto *exportActionLayout = new QHBoxLayout(exportActions);
+    exportActionLayout->setContentsMargins(0, 0, 0, 0);
+    exportActionLayout->setSpacing(8);
+    exportActionLayout->addWidget(exportInpButton_);
+    exportActionLayout->addWidget(runCalculixButton_);
+    addStepCard("6", "Export and Solve", &exportStepStatusLabel_, exportActions);
+    addStepCard("7", "Visualize Result", &resultStepStatusLabel_, openResultButton_);
+
+    auto *detailsTitle = new QLabel("Project Details", sideContent);
+    detailsTitle->setObjectName("SectionTitle");
+    sideLayout->addWidget(detailsTitle);
+    sideLayout->addWidget(projectLabel_);
     sideLayout->addWidget(modelLabel_);
-    sideLayout->addSpacing(10);
-    sideLayout->addWidget(new QLabel("Simulation", sidePanel));
-    sideLayout->addWidget(timeLabel_);
     sideLayout->addWidget(valueLabel_);
-    sideLayout->addWidget(playButton);
-    sideLayout->addWidget(resetButton);
-    sideLayout->addSpacing(10);
-    sideLayout->addWidget(new QLabel("Sensors", sidePanel));
-    sideLayout->addWidget(sensorList_, 1);
+    auto *loadListTitle = new QLabel("Load Points", sideContent);
+    loadListTitle->setObjectName("SectionTitle");
+    sideLayout->addWidget(loadListTitle);
+    sideLayout->addWidget(loadingDeviceList_, 1);
+    auto *constraintListTitle = new QLabel("Constraint Faces", sideContent);
+    constraintListTitle->setObjectName("SectionTitle");
+    sideLayout->addWidget(constraintListTitle);
+    sideLayout->addWidget(fixedNodeList_);
+    sideLayout->addStretch(1);
+
+    sidePanel->setStyleSheet(
+        "QWidget#SidePanel { background: #f4f6f8; border-right: 1px solid #d7dde4; }"
+        "QLabel#PanelTitle { color: #17212b; font-size: 20px; font-weight: 700; }"
+        "QLabel#PanelSubtitle, QLabel#MutedLabel { color: #5d6975; }"
+        "QLabel#NextActionLabel { background: #eaf2ff; border: 1px solid #c7dbff; border-radius: 6px; padding: 10px; color: #183b67; }"
+        "QLabel#ConfigStatusLabel { background: #ffffff; border: 1px solid #d9e0e7; border-radius: 6px; padding: 10px; color: #26323d; }"
+        "QFrame#StepCard { background: #ffffff; border: 1px solid #d9e0e7; border-radius: 8px; }"
+        "QLabel#StepBadge { background: #1d4ed8; color: white; border-radius: 12px; font-weight: 700; }"
+        "QLabel#StepTitle { color: #17212b; font-size: 14px; font-weight: 700; }"
+        "QLabel#StepStatus { color: #4a5562; }"
+        "QLabel#SectionTitle { color: #344151; font-weight: 700; margin-top: 6px; }"
+        "QPushButton, QToolButton { min-height: 30px; border: 1px solid #bcc7d3; border-radius: 6px; padding: 6px 10px; background: #ffffff; color: #1f2d3a; }"
+        "QPushButton:hover, QToolButton:hover { background: #eef5ff; border-color: #8fb8ff; }"
+        "QPushButton:checked, QToolButton:checked { background: #dbeafe; border-color: #2563eb; color: #123c88; }"
+        "QPushButton:disabled, QToolButton:disabled { background: #eef1f4; color: #98a3ae; border-color: #d7dde4; }"
+        "QListWidget { background: #ffffff; border: 1px solid #d9e0e7; border-radius: 6px; padding: 4px; }"
+    );
 
     vtkWidget_ = new QVTKOpenGLNativeWidget(root);
     rootLayout->addWidget(sidePanel);
@@ -138,6 +252,168 @@ void MainWindow::buildUi()
 
     setCentralWidget(root);
     setStatusBar(new QStatusBar(this));
+    backgroundProgressLabel_ = new QLabel(this);
+    backgroundProgressLabel_->setObjectName("BackgroundProgressLabel");
+    backgroundProgressLabel_->setVisible(false);
+    backgroundProgressBar_ = new QProgressBar(this);
+    backgroundProgressBar_->setRange(0, 0);
+    backgroundProgressBar_->setFixedWidth(180);
+    backgroundProgressBar_->setTextVisible(false);
+    backgroundProgressBar_->setVisible(false);
+    statusBar()->addPermanentWidget(backgroundProgressLabel_);
+    statusBar()->addPermanentWidget(backgroundProgressBar_);
+    refreshWorkflowStatus();
+}
+
+void MainWindow::startBackgroundProgress(const QString &message)
+{
+    if (backgroundProgressLabel_) {
+        backgroundProgressLabel_->setText(message);
+        backgroundProgressLabel_->setVisible(true);
+    }
+    if (backgroundProgressBar_) {
+        backgroundProgressBar_->setRange(0, 0);
+        backgroundProgressBar_->setVisible(true);
+    }
+    statusBar()->showMessage(message);
+    refreshWorkflowStatus();
+}
+
+void MainWindow::finishBackgroundProgress(const QString &message)
+{
+    if (backgroundProgressLabel_) {
+        backgroundProgressLabel_->setVisible(false);
+    }
+    if (backgroundProgressBar_) {
+        backgroundProgressBar_->setVisible(false);
+    }
+    statusBar()->showMessage(message);
+    refreshWorkflowStatus();
+}
+
+void MainWindow::refreshWorkflowStatus()
+{
+    const bool projectReady = !projectDir_.isEmpty();
+    const bool modelReady = !modelPath_.isEmpty();
+    const QString suffix = QFileInfo(modelPath_).suffix().toLower();
+    const bool stepModel = modelReady && (suffix == QStringLiteral("step") || suffix == QStringLiteral("stp"));
+    const int constraintCount = selectedConstraintFaceIds().size();
+    const bool constraintsReady = constraintCount > 0;
+    const bool meshReady = !volumeMesh_.nodes.isEmpty() && !volumeMesh_.tetrahedra.isEmpty();
+    const bool loadsLoaded = !loadingDevices_.isEmpty();
+    const bool backgroundBusy = meshJobRunning_ || solverJobRunning_;
+
+    int enabledLoads = 0;
+    int mappedLoads = 0;
+    for (const LoadingDevice &device : loadingDevices_) {
+        if (!device.enabled) {
+            continue;
+        }
+        ++enabledLoads;
+        if (device.meshNodeId >= 0 && device.meshNodeId < volumeMesh_.nodes.size()) {
+            ++mappedLoads;
+        }
+    }
+    const bool loadsReady = loadsLoaded && enabledLoads > 0 && mappedLoads == enabledLoads;
+    const bool solveReady = projectReady && stepModel && constraintsReady && meshReady && loadsReady;
+    const bool resultAvailable = projectReady
+        && (QFile::exists(QDir(projectSubdir(QStringLiteral("solver"))).absoluteFilePath(QStringLiteral("model.frd")))
+            || QFile::exists(QDir(projectSubdir(QStringLiteral("results"))).absoluteFilePath(QStringLiteral("model.frd"))));
+
+    auto setStep = [](QLabel *label, bool ok, const QString &okText, const QString &pendingText) {
+        if (!label) {
+            return;
+        }
+        const QString state = ok
+            ? QStringLiteral("<span style='color:#16794c;font-weight:700'>OK</span>")
+            : QStringLiteral("<span style='color:#a15c00;font-weight:700'>Pending</span>");
+        label->setText(QString("%1&nbsp;&nbsp;%2").arg(state, ok ? okText : pendingText));
+    };
+
+    setStep(projectStepStatusLabel_, projectReady,
+        QString("Project folder: %1").arg(projectName_),
+        QStringLiteral("Create or open a project before importing files."));
+    setStep(modelStepStatusLabel_, stepModel,
+        QString("STEP model loaded: %1").arg(QFileInfo(modelPath_).fileName()),
+        modelReady ? QStringLiteral("Loaded file is not STEP/STP; full solver workflow requires STEP/STP.") : QStringLiteral("Import a STEP/STP CAD model."));
+    setStep(constraintStepStatusLabel_, constraintsReady,
+        QString("%1 constraint face(s) selected.").arg(constraintCount),
+        QStringLiteral("Pick one or more STEP faces to fix UX/UY/UZ."));
+    setStep(meshStepStatusLabel_, meshReady,
+        QString("Netgen mesh: %1 nodes, %2 tetrahedra.").arg(volumeMesh_.nodes.size()).arg(volumeMesh_.tetrahedra.size()),
+        QStringLiteral("Generate the Netgen volume mesh after constraint faces are selected."));
+    setStep(loadStepStatusLabel_, loadsReady,
+        QString("%1/%2 enabled load point(s) mapped to mesh nodes.").arg(mappedLoads).arg(enabledLoads),
+        loadsLoaded
+            ? QString("%1/%2 enabled load point(s) mapped. Pick remaining points on the boundary mesh.").arg(mappedLoads).arg(enabledLoads)
+            : QStringLiteral("Load a loading-point JSON file, then pick each point on the boundary mesh."));
+    setStep(exportStepStatusLabel_, solveReady,
+        QStringLiteral("Ready to export INP or run CalculiX."),
+        QStringLiteral("Requires STEP model, constraints, volume mesh, and mapped load points."));
+    setStep(resultStepStatusLabel_, resultAvailable,
+        QStringLiteral("Result file found. Open it to show displacement contour."),
+        QStringLiteral("Run CalculiX or place model.frd in solver/results."));
+
+    QString nextAction;
+    if (!projectReady) {
+        nextAction = QStringLiteral("Next: create or open a project from the top toolbar.");
+    } else if (!modelReady || !stepModel) {
+        nextAction = QStringLiteral("Next: import a STEP/STP model.");
+    } else if (!constraintsReady) {
+        nextAction = QStringLiteral("Next: enable Pick Constraint Faces and click fixed faces on the imported model.");
+    } else if (!meshReady) {
+        nextAction = QStringLiteral("Next: generate the Netgen volume mesh.");
+    } else if (!loadsLoaded) {
+        nextAction = QStringLiteral("Next: load the loading-point JSON file.");
+    } else if (!loadsReady) {
+        nextAction = QStringLiteral("Next: enable Pick Load Points and click nodes on the generated boundary mesh.");
+    } else {
+        nextAction = QStringLiteral("Next: export model.inp or run CalculiX, then open the result for visualization.");
+    }
+    if (workflowLabel_) {
+        workflowLabel_->setText(QString("<b>%1</b>").arg(nextAction));
+    }
+
+    QStringList checks;
+    checks << (projectReady ? QStringLiteral("Project ready") : QStringLiteral("Project missing"));
+    checks << (stepModel ? QStringLiteral("STEP model ready") : QStringLiteral("STEP model missing"));
+    checks << (constraintsReady ? QString("Constraint faces: %1").arg(constraintCount) : QStringLiteral("Constraint faces missing"));
+    checks << (meshReady ? QString("Volume mesh: %1 nodes").arg(volumeMesh_.nodes.size()) : QStringLiteral("Volume mesh missing"));
+    checks << (loadsReady ? QString("Load nodes mapped: %1").arg(mappedLoads) : QStringLiteral("Load nodes missing"));
+    if (configStatusLabel_) {
+        configStatusLabel_->setText(QString("<b>Configuration checks</b><br>%1").arg(checks.join(QStringLiteral("<br>"))));
+    }
+
+    if (openModelButton_) {
+        openModelButton_->setEnabled(projectReady);
+    }
+    if (pickConstraintFaceAction_) {
+        pickConstraintFaceAction_->setEnabled(stepModel);
+        if (!stepModel) {
+            pickConstraintFaceAction_->setChecked(false);
+        }
+    }
+    if (generateMeshButton_) {
+        generateMeshButton_->setEnabled(projectReady && stepModel && constraintsReady && !backgroundBusy);
+    }
+    if (loadPointsButton_) {
+        loadPointsButton_->setEnabled(projectReady && meshReady);
+    }
+    if (pickControlPointAction_) {
+        pickControlPointAction_->setEnabled(meshReady && loadsLoaded);
+        if (!meshReady || !loadsLoaded) {
+            pickControlPointAction_->setChecked(false);
+        }
+    }
+    if (exportInpButton_) {
+        exportInpButton_->setEnabled(solveReady && !backgroundBusy);
+    }
+    if (runCalculixButton_) {
+        runCalculixButton_->setEnabled(solveReady && !backgroundBusy);
+    }
+    if (openResultButton_) {
+        openResultButton_->setEnabled(meshReady);
+    }
 }
 
 void MainWindow::buildScene()
@@ -156,11 +432,34 @@ void MainWindow::buildScene()
     vtkWidget_->setRenderWindow(renderWindow_);
     renderer_->SetBackground(0.08, 0.09, 0.10);
 
+    modelPicker_ = vtkSmartPointer<vtkCellPicker>::New();
+    modelPicker_->SetTolerance(0.0008);
+    modelPicker_->PickFromListOn();
+
+    leftButtonPressCallback_ = vtkSmartPointer<vtkCallbackCommand>::New();
+    leftButtonPressCallback_->SetClientData(this);
+    leftButtonPressCallback_->SetCallback(&MainWindow::onVtkLeftButtonPress);
+    vtkWidget_->interactor()->AddObserver(vtkCommand::LeftButtonPressEvent, leftButtonPressCallback_, 1.0);
+
     auto axes = vtkSmartPointer<vtkAxesActor>::New();
-    axes->SetTotalLength(1.2, 1.2, 1.2);
+    axes->SetTotalLength(1.0, 1.0, 1.0);
     axes->SetShaftTypeToCylinder();
-    axes->SetCylinderRadius(0.015);
-    renderer_->AddActor(axes);
+    axes->SetCylinderRadius(0.035);
+    axes->SetConeRadius(0.16);
+    axes->SetSphereRadius(0.08);
+    axes->GetXAxisCaptionActor2D()->GetCaptionTextProperty()->SetColor(0.95, 0.22, 0.18);
+    axes->GetYAxisCaptionActor2D()->GetCaptionTextProperty()->SetColor(0.25, 0.82, 0.32);
+    axes->GetZAxisCaptionActor2D()->GetCaptionTextProperty()->SetColor(0.30, 0.55, 1.0);
+    axes->GetXAxisCaptionActor2D()->GetCaptionTextProperty()->SetFontSize(18);
+    axes->GetYAxisCaptionActor2D()->GetCaptionTextProperty()->SetFontSize(18);
+    axes->GetZAxisCaptionActor2D()->GetCaptionTextProperty()->SetFontSize(18);
+
+    orientationMarker_ = vtkSmartPointer<vtkOrientationMarkerWidget>::New();
+    orientationMarker_->SetOrientationMarker(axes);
+    orientationMarker_->SetInteractor(vtkWidget_->interactor());
+    orientationMarker_->SetViewport(0.02, 0.02, 0.18, 0.18);
+    orientationMarker_->SetEnabled(1);
+    orientationMarker_->InteractiveOff();
 
     scalarBar_ = vtkSmartPointer<vtkScalarBarActor>::New();
     scalarBar_->SetLookupTable(lookupTable_);
@@ -169,17 +468,8 @@ void MainWindow::buildScene()
     scalarBar_->SetWidth(0.10);
     scalarBar_->SetHeight(0.46);
     scalarBar_->SetPosition(0.88, 0.10);
-    renderer_->AddActor2D(scalarBar_);
+    renderer_->AddViewProp(scalarBar_);
 }
-
-void MainWindow::loadDemoFiles()
-{
-    loadModel(samplePath("specimen.stl"));
-    loadSensors(samplePath("sensors.json"));
-    loadLoadData(samplePath("load_data.csv"));
-    statusBar()->showMessage("Loaded sample model, sensors, and load data.");
-}
-
 QString MainWindow::samplePath(const QString &fileName) const
 {
     const QString appSample = QCoreApplication::applicationDirPath() + "/samples/" + fileName;
@@ -188,10 +478,13 @@ QString MainWindow::samplePath(const QString &fileName) const
     }
     return QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../../samples/" + fileName);
 }
-
 void MainWindow::openModel()
 {
-    QFileDialog dialog(this, "Open model", samplePath(QString()));
+    if (!ensureProjectReady(QStringLiteral("opening a model"))) {
+        return;
+    }
+
+    QFileDialog dialog(this, "Open model", projectDir_.isEmpty() ? samplePath(QString()) : projectDir_);
     dialog.setFileMode(QFileDialog::ExistingFile);
     dialog.setAcceptMode(QFileDialog::AcceptOpen);
     dialog.setOption(QFileDialog::DontUseNativeDialog, true);
@@ -204,412 +497,34 @@ void MainWindow::openModel()
     });
 
     if (dialog.exec() == QDialog::Accepted && !dialog.selectedFiles().isEmpty()) {
-        loadModel(dialog.selectedFiles().first());
-    }
-}
-
-void MainWindow::openSensors()
-{
-    const QString path = QFileDialog::getOpenFileName(this, "Load sensors", QCoreApplication::applicationDirPath(), "JSON (*.json)");
-    if (!path.isEmpty()) {
-        loadSensors(path);
-    }
-}
-
-void MainWindow::openLoadData()
-{
-    const QString path = QFileDialog::getOpenFileName(this, "Load data", QCoreApplication::applicationDirPath(), "CSV (*.csv)");
-    if (!path.isEmpty()) {
-        loadLoadData(path);
-    }
-}
-
-void MainWindow::loadModel(const QString &filePath)
-{
-    const QString suffix = QFileInfo(filePath).suffix().toLower();
-    QString displayName = QFileInfo(filePath).fileName();
-    vtkSmartPointer<vtkPolyData> polyData;
-
-    if (suffix == "step" || suffix == "stp") {
-        try {
-            polyData = loadStepModel(filePath);
-            displayName += " (STEP via OCCT)";
-        } catch (const std::exception &ex) {
-            QMessageBox::warning(this, "STEP import failed", ex.what());
+        const QString projectModelPath = copyFileIntoProject(dialog.selectedFiles().first(), QStringLiteral("models"));
+        if (projectModelPath.isEmpty()) {
             return;
         }
-    } else if (suffix == "obj") {
-        auto objReader = vtkSmartPointer<vtkOBJReader>::New();
-        objReader->SetFileName(filePath.toLocal8Bit().constData());
-        auto triangle = vtkSmartPointer<vtkTriangleFilter>::New();
-        triangle->SetInputConnection(objReader->GetOutputPort());
-
-        auto cleaner = vtkSmartPointer<vtkCleanPolyData>::New();
-        cleaner->SetInputConnection(triangle->GetOutputPort());
-        cleaner->Update();
-
-        polyData = vtkSmartPointer<vtkPolyData>::New();
-        polyData->DeepCopy(cleaner->GetOutput());
-    } else if (suffix == "stl") {
-        auto stlReader = vtkSmartPointer<vtkSTLReader>::New();
-        stlReader->SetFileName(filePath.toLocal8Bit().constData());
-        auto triangle = vtkSmartPointer<vtkTriangleFilter>::New();
-        triangle->SetInputConnection(stlReader->GetOutputPort());
-
-        auto cleaner = vtkSmartPointer<vtkCleanPolyData>::New();
-        cleaner->SetInputConnection(triangle->GetOutputPort());
-        cleaner->Update();
-
-        polyData = vtkSmartPointer<vtkPolyData>::New();
-        polyData->DeepCopy(cleaner->GetOutput());
-    } else {
-        QMessageBox::warning(this, "Unsupported model", "Unsupported model format: " + suffix);
+        loadModel(projectModelPath);
+        projectModelRelativePath_ = projectRelativePath(projectModelPath);
+        saveProjectFile();
+        updateProjectUi();
+    }
+}
+void MainWindow::openLoadingDevices()
+{
+    if (!ensureProjectReady(QStringLiteral("loading load points"))) {
         return;
     }
 
-    if (!polyData || polyData->GetNumberOfPoints() == 0) {
-        QMessageBox::warning(this, "Model error", "The model has no renderable points.");
-        return;
-    }
-
-    if (modelActor_) {
-        renderer_->RemoveActor(modelActor_);
-    }
-
-    modelPath_ = filePath;
-    modelData_ = polyData;
-    modelMapper_ = vtkSmartPointer<vtkPolyDataMapper>::New();
-    modelMapper_->SetInputData(modelData_);
-    modelMapper_->SetLookupTable(lookupTable_);
-    modelMapper_->ScalarVisibilityOn();
-
-    modelActor_ = vtkSmartPointer<vtkActor>::New();
-    modelActor_->SetMapper(modelMapper_);
-    modelActor_->GetProperty()->SetInterpolationToPhong();
-    modelActor_->GetProperty()->SetSpecular(0.25);
-    modelActor_->GetProperty()->SetSpecularPower(18);
-    renderer_->AddActor(modelActor_);
-
-    modelLabel_->setText(QString("Model: %1\nPoints: %2").arg(displayName).arg(modelData_->GetNumberOfPoints()));
-    applyContour();
-    resetView();
-    statusBar()->showMessage("Loaded model: " + displayName);
-}
-
-vtkSmartPointer<vtkPolyData> MainWindow::loadStepModel(const QString &filePath)
-{
-    STEPControl_Reader reader;
-    const IFSelect_ReturnStatus status = reader.ReadFile(filePath.toLocal8Bit().constData());
-    if (status != IFSelect_RetDone) {
-        throw std::runtime_error("OCCT could not read the STEP/STP file.");
-    }
-
-    reader.TransferRoots();
-    TopoDS_Shape shape = reader.OneShape();
-    if (shape.IsNull()) {
-        throw std::runtime_error("The STEP/STP file did not contain a valid shape.");
-    }
-
-    const double linearDeflection = 0.25;
-    const double angularDeflection = 0.5;
-    BRepMesh_IncrementalMesh mesh(shape, linearDeflection, false, angularDeflection, true);
-    mesh.Perform();
-    if (!mesh.IsDone()) {
-        throw std::runtime_error("OCCT failed to create a surface mesh from the STEP/STP shape.");
-    }
-
-    auto points = vtkSmartPointer<vtkPoints>::New();
-    auto triangles = vtkSmartPointer<vtkCellArray>::New();
-
-    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
-        const TopoDS_Face face = TopoDS::Face(explorer.Current());
-        TopLoc_Location location;
-        Handle(Poly_Triangulation) triangulation = BRep_Tool::Triangulation(face, location);
-        if (triangulation.IsNull()) {
-            continue;
+    const QString path = QFileDialog::getOpenFileName(this, "Load load points", projectSubdir(QStringLiteral("inputs")), "JSON (*.json)");
+    if (!path.isEmpty()) {
+        const QString projectInputPath = copyFileIntoProject(path, QStringLiteral("inputs"));
+        if (projectInputPath.isEmpty()) {
+            return;
         }
-
-        const gp_Trsf transform = location.Transformation();
-        for (int i = 1; i <= triangulation->NbTriangles(); ++i) {
-            int n1 = 0;
-            int n2 = 0;
-            int n3 = 0;
-            triangulation->Triangle(i).Get(n1, n2, n3);
-            if (face.Orientation() == TopAbs_REVERSED) {
-                std::swap(n2, n3);
-            }
-
-            gp_Pnt p1 = triangulation->Node(n1);
-            gp_Pnt p2 = triangulation->Node(n2);
-            gp_Pnt p3 = triangulation->Node(n3);
-            p1.Transform(transform);
-            p2.Transform(transform);
-            p3.Transform(transform);
-
-            const vtkIdType ids[3] = {
-                points->InsertNextPoint(p1.X(), p1.Y(), p1.Z()),
-                points->InsertNextPoint(p2.X(), p2.Y(), p2.Z()),
-                points->InsertNextPoint(p3.X(), p3.Y(), p3.Z())
-            };
-            triangles->InsertNextCell(3, ids);
-        }
-    }
-
-    auto polyData = vtkSmartPointer<vtkPolyData>::New();
-    polyData->SetPoints(points);
-    polyData->SetPolys(triangles);
-
-    auto cleaner = vtkSmartPointer<vtkCleanPolyData>::New();
-    cleaner->SetInputData(polyData);
-    cleaner->Update();
-
-    auto cleaned = vtkSmartPointer<vtkPolyData>::New();
-    cleaned->DeepCopy(cleaner->GetOutput());
-    if (cleaned->GetNumberOfPoints() == 0 || cleaned->GetNumberOfCells() == 0) {
-        throw std::runtime_error("The STEP/STP shape did not produce renderable mesh triangles.");
-    }
-    return cleaned;
-}
-
-void MainWindow::loadSensors(const QString &filePath)
-{
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, "Sensors", "Could not open sensor file.");
-        return;
-    }
-
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-    if (!document.isArray()) {
-        QMessageBox::warning(this, "Sensors", "Sensor file must contain a JSON array.");
-        return;
-    }
-
-    sensors_.clear();
-    for (const QJsonValue &value : document.array()) {
-        const QJsonObject object = value.toObject();
-        const QJsonArray position = object.value("position").toArray();
-        if (position.size() < 3) {
-            continue;
-        }
-        Sensor sensor;
-        sensor.id = object.value("id").toString();
-        sensor.name = object.value("name").toString(sensor.id);
-        sensor.position = QVector3D(
-            float(position.at(0).toDouble()),
-            float(position.at(1).toDouble()),
-            float(position.at(2).toDouble()));
-        sensor.type = object.value("type").toString("load");
-        sensor.unit = object.value("unit").toString("kN");
-        sensors_.push_back(sensor);
-    }
-
-    refreshSensorActors();
-    refreshSensorList();
-    applyContour();
-    statusBar()->showMessage(QString("Loaded %1 sensors.").arg(sensors_.size()));
-}
-
-void MainWindow::loadLoadData(const QString &filePath)
-{
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, "Load data", "Could not open CSV file.");
-        return;
-    }
-
-    QTextStream stream(&file);
-    const QString headerLine = stream.readLine();
-    const QStringList headers = headerLine.split(',', Qt::SkipEmptyParts);
-
-    QVector<QMap<QString, double>> rows;
-    while (!stream.atEnd()) {
-        const QString line = stream.readLine().trimmed();
-        if (line.isEmpty()) {
-            continue;
-        }
-        const QStringList values = line.split(',');
-        QMap<QString, double> row;
-        for (int i = 0; i < headers.size() && i < values.size(); ++i) {
-            row.insert(headers.at(i).trimmed(), values.at(i).trimmed().toDouble());
-        }
-        rows.push_back(row);
-    }
-
-    if (rows.isEmpty()) {
-        QMessageBox::warning(this, "Load data", "CSV file has no data rows.");
-        return;
-    }
-
-    loadRows_ = rows;
-    currentRow_ = 0;
-    applyFrame(0);
-    statusBar()->showMessage(QString("Loaded %1 load frames.").arg(loadRows_.size()));
-}
-
-void MainWindow::refreshSensorActors()
-{
-    for (const auto &actor : sensorActors_) {
-        renderer_->RemoveActor(actor);
-    }
-    for (const auto &label : labelActors_) {
-        renderer_->RemoveActor(label);
-    }
-    sensorActors_.clear();
-    labelActors_.clear();
-
-    for (const Sensor &sensor : sensors_) {
-        auto sphere = vtkSmartPointer<vtkSphereSource>::New();
-        sphere->SetCenter(sensor.position.x(), sensor.position.y(), sensor.position.z());
-        sphere->SetRadius(0.08);
-        sphere->SetThetaResolution(24);
-        sphere->SetPhiResolution(16);
-
-        auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-        mapper->SetInputConnection(sphere->GetOutputPort());
-
-        auto actor = vtkSmartPointer<vtkActor>::New();
-        actor->SetMapper(mapper);
-        actor->GetProperty()->SetColor(1.0, 0.82, 0.18);
-        actor->GetProperty()->SetAmbient(0.35);
-        actor->GetProperty()->SetDiffuse(0.75);
-        renderer_->AddActor(actor);
-        sensorActors_.push_back(actor);
-
-        auto label = vtkSmartPointer<vtkBillboardTextActor3D>::New();
-        label->SetInput(sensor.id.toUtf8().constData());
-        label->SetPosition(sensor.position.x() + 0.08, sensor.position.y() + 0.08, sensor.position.z() + 0.12);
-        label->GetTextProperty()->SetColor(1.0, 1.0, 1.0);
-        label->GetTextProperty()->SetFontSize(18);
-        renderer_->AddActor(label);
-        labelActors_.push_back(label);
-    }
-
-    renderWindow_->Render();
-}
-
-void MainWindow::refreshSensorList()
-{
-    sensorList_->clear();
-    for (const Sensor &sensor : sensors_) {
-        sensorList_->addItem(QString("%1  %2 %3  (%4, %5, %6)")
-            .arg(sensor.id)
-            .arg(sensor.value, 0, 'f', 2)
-            .arg(sensor.unit)
-            .arg(sensor.position.x(), 0, 'f', 2)
-            .arg(sensor.position.y(), 0, 'f', 2)
-            .arg(sensor.position.z(), 0, 'f', 2));
+        loadLoadingDevices(projectInputPath);
+        projectLoadingDevicesRelativePath_ = projectRelativePath(projectInputPath);
+        saveProjectFile();
+        updateProjectUi();
     }
 }
-
-void MainWindow::applyFrame(int index)
-{
-    if (loadRows_.isEmpty()) {
-        return;
-    }
-
-    currentRow_ = index % loadRows_.size();
-    const QMap<QString, double> &row = loadRows_.at(currentRow_);
-    for (Sensor &sensor : sensors_) {
-        if (row.contains(sensor.id)) {
-            sensor.value = row.value(sensor.id);
-        }
-    }
-
-    const double timestamp = row.value("timestamp", currentRow_);
-    timeLabel_->setText(QString("Time: %1 s").arg(timestamp, 0, 'f', 2));
-
-    if (!sensors_.isEmpty()) {
-        auto [minIt, maxIt] = std::minmax_element(sensors_.begin(), sensors_.end(), [](const Sensor &a, const Sensor &b) {
-            return a.value < b.value;
-        });
-        valueLabel_->setText(QString("Load range: %1 - %2 kN").arg(minIt->value, 0, 'f', 2).arg(maxIt->value, 0, 'f', 2));
-        const double upper = maxIt->value > minIt->value ? maxIt->value : minIt->value + 1.0;
-        lookupTable_->SetRange(minIt->value, upper);
-    }
-
-    refreshSensorList();
-    applyContour();
-}
-
-void MainWindow::applyContour()
-{
-    if (!modelData_ || sensors_.isEmpty()) {
-        renderWindow_->Render();
-        return;
-    }
-
-    auto scalars = vtkSmartPointer<vtkDoubleArray>::New();
-    scalars->SetName("InterpolatedLoad");
-    scalars->SetNumberOfComponents(1);
-    scalars->SetNumberOfTuples(modelData_->GetNumberOfPoints());
-
-    for (vtkIdType i = 0; i < modelData_->GetNumberOfPoints(); ++i) {
-        double point[3];
-        modelData_->GetPoint(i, point);
-        scalars->SetValue(i, interpolateLoad(point[0], point[1], point[2]));
-    }
-
-    modelData_->GetPointData()->SetScalars(scalars);
-    modelData_->Modified();
-
-    if (modelMapper_) {
-        double minValue = std::numeric_limits<double>::max();
-        double maxValue = std::numeric_limits<double>::lowest();
-        for (const Sensor &sensor : sensors_) {
-            minValue = std::min(minValue, sensor.value);
-            maxValue = std::max(maxValue, sensor.value);
-        }
-        if (maxValue <= minValue) {
-            maxValue = minValue + 1.0;
-        }
-        modelMapper_->SetScalarRange(minValue, maxValue);
-        modelMapper_->Update();
-    }
-
-    renderWindow_->Render();
-}
-
-double MainWindow::interpolateLoad(double x, double y, double z) const
-{
-    double weightedSum = 0.0;
-    double weightTotal = 0.0;
-
-    for (const Sensor &sensor : sensors_) {
-        const double dx = x - sensor.position.x();
-        const double dy = y - sensor.position.y();
-        const double dz = z - sensor.position.z();
-        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (distance < 1e-6) {
-            return sensor.value;
-        }
-        const double weight = 1.0 / (distance * distance);
-        weightedSum += sensor.value * weight;
-        weightTotal += weight;
-    }
-
-    return weightTotal > 0.0 ? weightedSum / weightTotal : 0.0;
-}
-
-void MainWindow::advanceFrame()
-{
-    if (!loadRows_.isEmpty()) {
-        applyFrame(currentRow_ + 1);
-    }
-}
-
-void MainWindow::togglePlayback()
-{
-    isPlaying_ = !isPlaying_;
-    if (isPlaying_) {
-        playbackTimer_.start();
-        statusBar()->showMessage("Playback running.");
-    } else {
-        playbackTimer_.stop();
-        statusBar()->showMessage("Playback paused.");
-    }
-}
-
 void MainWindow::resetView()
 {
     renderer_->ResetCamera();
@@ -619,14 +534,12 @@ void MainWindow::resetView()
     renderer_->ResetCameraClippingRange();
     renderWindow_->Render();
 }
-
 void MainWindow::exportPng()
 {
-    const QString defaultPath = QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("visualization.png");
-    const QString path = QFileDialog::getSaveFileName(this, "Export PNG", defaultPath, "PNG (*.png)");
-    if (path.isEmpty()) {
+    if (!ensureProjectReady(QStringLiteral("exporting a screenshot"))) {
         return;
     }
+    const QString path = QDir(projectSubdir(QStringLiteral("exports"))).absoluteFilePath("visualization.png");
 
     renderWindow_->Render();
 

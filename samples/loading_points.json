@@ -1,0 +1,25 @@
+{
+  "loading_points": [
+    {
+      "id": "LP01",
+      "name": "Load Point 01",
+      "load": 12.0,
+      "unit": "kN",
+      "enabled": true
+    },
+    {
+      "id": "LP02",
+      "name": "Load Point 02",
+      "load": 8.0,
+      "unit": "kN",
+      "enabled": true
+    },
+    {
+      "id": "LP03",
+      "name": "Load Point 03",
+      "load": 5.0,
+      "unit": "kN",
+      "enabled": true
+    }
+  ]
+}

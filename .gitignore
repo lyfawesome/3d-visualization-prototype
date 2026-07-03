@@ -19,9 +19,27 @@ Makefile
 __pycache__/
 .pytest_cache/
 .mypy_cache/
+extern/
+vcpkg_installed/
+p/
+s/
 
 # Runtime outputs
 screenshots/
+solver_runs/
+solver_tests/
+test/
+*.12d
+*.cvg
+*.dat
+*.ele
+*.face
+*.frd
+*.inp
+*.node
+*.sta
+*.vol
+*.vtk
 
 # Logs and temporary files
 *.log

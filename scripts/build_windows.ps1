@@ -32,4 +32,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "CMake build failed."
 }
 
+$TargetExe = Join-Path $Root "build\windows-msys2-ucrt64\VisualizationPrototype.exe"
+$WinDeployQt = Join-Path $MsysRoot "ucrt64\bin\windeployqt6.exe"
+if (-not (Test-Path $WinDeployQt)) {
+    throw "windeployqt6.exe was not found. Install mingw-w64-ucrt-x86_64-qt6-base first."
+}
+
+& $WinDeployQt --release --compiler-runtime $TargetExe
+if ($LASTEXITCODE -ne 0) {
+    throw "Qt runtime deployment failed."
+}
+
 & (Join-Path $PSScriptRoot "deploy_msys2_runtime.ps1")

@@ -13,12 +13,85 @@
         "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe",
         "CMAKE_MAKE_PROGRAM": "C:/msys64/ucrt64/bin/ninja.exe"
       }
+    },
+    {
+      "name": "windows-msvc-vcpkg",
+      "displayName": "Windows MSVC 2022 + vcpkg",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-msvc-vcpkg",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/extern/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_HOST_TRIPLET": "x64-windows",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_APPLOCAL_DEPS": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc-vcpkg-release-only",
+      "displayName": "Windows MSVC 2022 + vcpkg (release-only deps)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-msvc-vcpkg-release-only",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/extern/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-release",
+        "VCPKG_HOST_TRIPLET": "x64-windows-release",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_APPLOCAL_DEPS": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc-vcpkg-lean-release",
+      "displayName": "Windows MSVC 2022 + vcpkg (lean VTK Qt)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-msvc-vcpkg-lean-release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/extern/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-release",
+        "VCPKG_HOST_TRIPLET": "x64-windows-release",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays/ports",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_APPLOCAL_DEPS": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc-external-deps",
+      "displayName": "Windows MSVC 2022 + external prebuilt deps",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-msvc-external-deps",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{MSVC_DEPS_PREFIX_PATH}"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "windows-msys2-ucrt64-release",
       "configurePreset": "windows-msys2-ucrt64"
+    },
+    {
+      "name": "windows-msvc-vcpkg-release",
+      "configurePreset": "windows-msvc-vcpkg",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-msvc-vcpkg-release-only",
+      "configurePreset": "windows-msvc-vcpkg-release-only",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-msvc-vcpkg-lean-release",
+      "configurePreset": "windows-msvc-vcpkg-lean-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-msvc-external-deps-release",
+      "configurePreset": "windows-msvc-external-deps",
+      "configuration": "Release"
     }
   ]
 }
